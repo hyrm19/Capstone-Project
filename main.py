@@ -44,8 +44,19 @@ def main(page: ft.Page):
                     border_color="#45A29E",
                     keyboard_type=ft.KeyboardType.NUMBER
                 ),
-                ft.Button("Save Log", bgcolor="#66FCF1", color="#0B0C10", expand=True)
+                ft.Button(
+                    "Save Log",
+                    icon=ft.Icons.SAVE_OUTLINED,
+                    bgcolor="#66FCF1",
+                    color="#0B0C10",
+                    width=float("inf"),
+                    height=46,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                    ),
+                )
             ],
+            tight=True,
             spacing=12,
         ),
     )
