@@ -9,8 +9,16 @@ from unittest.mock import patch
 
 import flet as ft
 
-import main as app
+import dashboard as app
 from storage import StorageError, load_habits, save_habits
+
+# Dashboard tests receive already-authenticated public profiles. Separate portal
+# tests below exercise real registration, password checking, and session control.
+TEST_MEMBERS = {
+    "member-alex": {"id": "member-alex", "name": "Alex Morgan", "email": "alex@example.com", "color": "#2563EB"},
+    "member-jamie": {"id": "member-jamie", "name": "Jamie Morgan", "email": "jamie@example.com", "color": "#7C3AED"},
+    "member-sam": {"id": "member-sam", "name": "Sam Morgan", "email": "sam@example.com", "color": "#047857"},
+}
 
 
 class TestPage:
@@ -30,7 +38,7 @@ class AppTests(unittest.TestCase):
     def setUp(self):
         # Freeze only the app's clock, not the operating system clock. Tests for
         # "today" should keep the same results even when run around midnight.
-        clock = patch("main.datetime", wraps=datetime)
+        clock = patch("dashboard.datetime", wraps=datetime)
         self.clock = clock.start()
         self.clock.now.return_value = datetime(2026, 11, 1, 12, 0)
         self.addCleanup(clock.stop)
@@ -38,16 +46,24 @@ class AppTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "habits.json"
         # Redirect the interface's storage calls into the temporary folder.
-        loader = patch("main.load_habits", side_effect=lambda: load_habits(self.path))
-        saver = patch("main.save_habits", side_effect=lambda habits: save_habits(habits, self.path))
+        loader = patch("dashboard.load_habits", side_effect=lambda: load_habits(self.path))
+        saver = patch("dashboard.save_habits", side_effect=lambda habits: save_habits(habits, self.path))
         self.loader = loader.start()
         self.saver = saver.start()
         self.addCleanup(loader.stop)
         self.addCleanup(saver.stop)
 
-    def build_app(self):
+    def build_app(self, member_id="member-alex"):
+        if hasattr(self, "session"):
+            self.session["active"] = False
+        session = {"active": True}
+        self.session = session
         page = TestPage()
-        app.main(page)
+        app.build_dashboard(
+            page, TEST_MEMBERS[member_id], TEST_MEMBERS,
+            is_session_active=lambda: session["active"],
+            on_logout=lambda e: session.update(active=False),
+        )
         row = page.controls[-1]
         form = row.controls[0].content.controls
         self.value = next(control for control in form if isinstance(control, ft.TextField))
@@ -56,7 +72,7 @@ class AppTests(unittest.TestCase):
         self.name_error = activity_input.controls[2]
         self.button = next(control for control in form if isinstance(control, ft.Button))
         self.status = form[-2]
-        self.member_selector = next(control for control in form if isinstance(control, ft.Dropdown))
+        self.assertFalse(any(isinstance(control, ft.Dropdown) for control in form))
         # Tabs contains a Column holding the labels followed by the page views.
         # Follow that structure instead of expecting the old standalone panel.
         self.tabs = row.controls[1]
@@ -78,9 +94,9 @@ class AppTests(unittest.TestCase):
         self.button.on_click(None)
 
     def select_member(self, member_id):
-        # In the real UI Flet sets .value before dispatching the selection event.
-        self.member_selector.value = member_id
-        self.member_selector.on_select(None)
+        # Simulate logging out then opening a new authenticated dashboard, not
+        # an editable member selector. Portal tests verify actual login/logout.
+        self.build_app(member_id)
 
     def card_name(self, card):
         # A card is a Row containing a badge and a Column of activity details.
@@ -99,12 +115,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.water_bar.value, 0.375)
         self.assertEqual(self.steps_label.value, "Steps: 2,000 / 8,000 (25%)")
         self.assertEqual(self.water_label.value, "Water: 3 / 8 cups (37.5%)")
-        self.select_member("demo-jamie")
+        self.select_member("member-jamie")
         self.assertEqual(self.steps_bar.value, 0)
         self.assertEqual(self.water_bar.value, 0)
         self.enter_activity("Water Intake", "1.5")
         self.assertEqual(self.water_bar.value, 1.5 / 8)
-        self.select_member("demo-alex")
+        self.select_member("member-alex")
         self.assertEqual(self.water_bar.value, 0.375)
         # A new launch derives the same totals from saved entries, not counters.
         self.build_app()
@@ -135,7 +151,7 @@ class AppTests(unittest.TestCase):
     def test_failed_save_does_not_change_daily_progress(self):
         self.build_app()
         self.enter_activity("Water Intake", "2")
-        with patch("main.save_habits", side_effect=StorageError("Disk full")):
+        with patch("dashboard.save_habits", side_effect=StorageError("Disk full")):
             self.enter_activity("Water Intake", "3")
         self.assertEqual(self.water_bar.value, 0.25)
         self.assertEqual(self.water_label.value, "Water: 2 / 8 cups (25%)")
@@ -143,9 +159,9 @@ class AppTests(unittest.TestCase):
     def test_old_or_unitless_steps_are_not_included_in_daily_progress(self):
         records = [
             {"name": "Steps", "value": 5000, "logged_at": datetime(2026, 10, 31),
-             "member_id": "demo-alex", "unit": "steps"},
+             "member_id": "member-alex", "unit": "steps"},
             {"name": "Steps", "value": 6000, "logged_at": datetime(2026, 11, 1),
-             "member_id": "demo-alex"},
+             "member_id": "member-alex"},
         ]
         save_habits(records, self.path)
         self.build_app()
@@ -236,7 +252,7 @@ class AppTests(unittest.TestCase):
         )
         self.assertEqual(len({id(view) for view in self.tab_views.controls}), 3)
         self.assertIn("not connected", self.cloud.content.controls[1].value)
-        self.assertIn("no member is signed in", self.personal.content.controls[2].value)
+        self.assertIn("alex@example.com", self.personal.content.controls[2].value)
 
     def test_save_updates_other_tabs_without_resetting_selection(self):
         self.build_app()
@@ -253,7 +269,7 @@ class AppTests(unittest.TestCase):
     def test_members_have_distinct_badges_and_personal_histories(self):
         self.build_app()
         self.enter_activity("Running", "5")
-        self.select_member("demo-jamie")
+        self.select_member("member-jamie")
         self.assertTrue(self.personal_empty.visible)
         self.assertFalse(self.personal_entries.visible)
         self.assertTrue(self.daily_progress.visible)
@@ -268,22 +284,22 @@ class AppTests(unittest.TestCase):
         self.assertNotEqual(jamie_badge.bgcolor, alex_badge.bgcolor)
         # Separate controls are required even when both tabs show the same entry.
         self.assertIsNot(self.entries.controls[0], self.personal_entries.controls[0])
-        self.select_member("demo-alex")
+        self.select_member("member-alex")
         self.assertEqual([self.card_name(c) for c in self.personal_entries.controls], ["Running"])
         self.assertEqual(len(self.entries.controls), 2)
         self.assertEqual(self.personal.content.controls[1].controls[1].value, "Alex Morgan")
 
     def test_member_ownership_survives_reopening_and_does_not_change_on_selection(self):
         self.build_app()
-        self.select_member("demo-sam")
+        self.select_member("member-sam")
         self.enter_activity()
         original = self.path.read_bytes()
-        self.select_member("demo-alex")
+        self.select_member("member-alex")
         self.assertEqual(self.path.read_bytes(), original)
         self.build_app()
-        self.assertEqual(load_habits(self.path)[0]["member_id"], "demo-sam")
+        self.assertEqual(load_habits(self.path)[0]["member_id"], "member-sam")
         self.assertTrue(self.personal_empty.visible)
-        self.select_member("demo-sam")
+        self.select_member("member-sam")
         self.assertEqual(len(self.personal_entries.controls), 1)
         self.assertEqual(self.entries.controls[0].content.controls[0].content.value, "SM")
 
@@ -295,7 +311,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.entries.controls[1].content.controls[1].controls[0].value, "Unassigned")
         self.assertEqual(self.entries.controls[0].content.controls[1].controls[0].value, "Unknown member")
         self.assertEqual(self.entries.controls[1].content.controls[0].content.value, "?")
-        for member_id in app.DEMO_MEMBERS:
+        for member_id in TEST_MEMBERS:
             self.select_member(member_id)
             self.assertEqual(len(self.personal_entries.controls), 0)
         self.enter_activity()
@@ -303,11 +319,10 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("member_id", loaded[0])
         self.assertEqual(loaded[1]["member_id"], "retired-member")
 
-    def test_missing_member_selection_cannot_save(self):
+    def test_ended_session_cannot_save_from_old_button(self):
         self.build_app()
-        self.member_selector.value = None
+        self.session["active"] = False
         self.enter_activity()
-        self.assertIsNotNone(self.member_selector.error_text)
         self.saver.assert_not_called()
 
     def test_invalid_inputs_do_not_write_a_file(self):
@@ -322,7 +337,7 @@ class AppTests(unittest.TestCase):
 
     def test_save_failure_preserves_form_and_allows_retry(self):
         self.build_app()
-        with patch("main.save_habits", side_effect=StorageError("Disk full")):
+        with patch("dashboard.save_habits", side_effect=StorageError("Disk full")):
             self.enter_activity()
         self.assertEqual(self.name.value, "Running")
         self.assertEqual(self.value.value, "2.5")
