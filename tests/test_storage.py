@@ -36,6 +36,28 @@ class StorageTests(unittest.TestCase):
         save_habits([], self.path)
         self.assertEqual(load_habits(self.path), [])
 
+    def test_member_ids_round_trip_without_changing_legacy_entries(self):
+        # Member IDs do not need to be in the current demo list. Storage keeps
+        # ownership data; the interface decides how to label an unknown member.
+        habits = [
+            self.habit,
+            {**self.habit, "member_id": "demo-alex"},
+            {**self.habit, "member_id": "unknown-member"},
+        ]
+        save_habits(habits, self.path)
+        self.assertEqual(load_habits(self.path), habits)
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("member_id", stored[0])
+
+    def test_invalid_member_id_does_not_overwrite_history(self):
+        save_habits([self.habit], self.path)
+        original = self.path.read_bytes()
+        for member_id in [None, "", "   ", 5, True]:
+            with self.subTest(member_id=member_id):
+                with self.assertRaises(StorageError):
+                    save_habits([{**self.habit, "member_id": member_id}], self.path)
+                self.assertEqual(self.path.read_bytes(), original)
+
     def test_corrupt_history_is_reported_and_untouched(self):
         self.path.parent.mkdir()
         good = {**self.habit, "logged_at": self.habit["logged_at"].isoformat()}
@@ -48,6 +70,8 @@ class StorageTests(unittest.TestCase):
             json.dumps([{**good, "value": float("nan")}]),
             json.dumps([{**good, "value": float("inf")}]),
             json.dumps([{**good, "logged_at": "yesterday"}]),
+            json.dumps([{**good, "member_id": None}]),
+            json.dumps([{**good, "member_id": " "}]),
             # A bad second record must not silently discard part of the history.
             json.dumps([good, {}]),
         ]

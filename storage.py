@@ -42,11 +42,20 @@ def _decode_habits(records):
         if not isinstance(timestamp, str):
             raise ValueError("An activity has a missing or invalid timestamp.")
 
-        habits.append({
+        habit = {
             "name": name.strip(),
             "value": value,
             "logged_at": datetime.fromisoformat(timestamp),
-        })
+        }
+        # Older files have no member_id, so keep those entries unassigned.
+        # If an ID is present, preserve it even if this app does not recognize
+        # that member. Never guess ownership from the currently selected member.
+        if "member_id" in record:
+            member_id = record["member_id"]
+            if not isinstance(member_id, str) or not member_id.strip():
+                raise ValueError("An activity has an invalid member ID.")
+            habit["member_id"] = member_id
+        habits.append(habit)
     # Validate the entire file rather than silently skipping damaged entries.
     # Otherwise a later save could accidentally erase the entries we skipped.
     return habits
@@ -80,6 +89,9 @@ def save_habits(habits, path=DATA_FILE):
                 "name": habit["name"],
                 "value": habit["value"],
                 "logged_at": habit["logged_at"].isoformat(),
+                # Add the optional key only when it exists. This lets old and
+                # new entries live together without changing historical owners.
+                **({"member_id": habit["member_id"]} if "member_id" in habit else {}),
             }
             for habit in habits
         ]

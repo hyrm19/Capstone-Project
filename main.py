@@ -9,6 +9,32 @@ import flet as ft
 # File handling lives in a separate module so the interface stays readable.
 from storage import DATA_FILE, StorageError, load_habits, save_habits
 
+# These are sample identities, not registered accounts. Stable IDs are stored
+# with activities; names and badge colors are looked up here for display.
+# Later, authentication will supply a real member instead of this demo selector.
+DEMO_MEMBERS = {
+    "demo-alex": {"name": "Alex Morgan", "color": "#2563EB"},
+    "demo-jamie": {"name": "Jamie Morgan", "color": "#7C3AED"},
+    "demo-sam": {"name": "Sam Morgan", "color": "#047857"},
+}
+
+
+def member_details(member_id):
+    """Look up badge information without assigning unknown or old entries."""
+    member = DEMO_MEMBERS.get(member_id)
+    if member is None:
+        # An unknown ID is different from an old entry with no owner at all.
+        return {
+            "name": "Unknown member" if member_id else "Unassigned",
+            "color": "#4B5563",
+            "initials": "?",
+        }
+    # Split a name into words and take the first letter of the first two words.
+    # For example, "Alex Morgan" becomes "AM". upper() capitalizes the letters.
+    initials = "".join(word[0] for word in member["name"].split()[:2]).upper()
+    return {**member, "initials": initials}
+
+
 def main(page: ft.Page):
     # Flet calls main() with the Page that contains this app's interface.
     page.title = "VitalityHub | Premium Capstone"
@@ -46,6 +72,21 @@ def main(page: ft.Page):
 
     # Reserved for the future AutoComplete feature; not used by the form yet.
     exercise_options = ["Running", "Swimming", "Cycling", "Yoga", "Water Intake", "Gym"]
+
+    # Choosing a sample member changes who owns NEW saves and whose history is
+    # shown in Personal. It never changes ownership of already saved entries.
+    # This is NOT authentication: anyone using the app can choose any sample.
+    member_selector = ft.Dropdown(
+        label="Demo member (not a login)",
+        value="demo-alex",
+        color="white",
+        bgcolor="#1F2833",
+        border_color="#45A29E",
+        options=[
+            ft.DropdownOption(key=member_id, text=member["name"])
+            for member_id, member in DEMO_MEMBERS.items()
+        ],
+    )
 
     # Keep references to the input controls so save_log() can read their .value,
     # show validation messages through .error_text, and clear them after a save.
@@ -87,6 +128,10 @@ def main(page: ft.Page):
     # Each tab owns its own controls. Do not put the same Text control into two
     # views: controls have one place in the interface, even if their text matches.
     personal_summary = ft.Text(color="#66FCF1")
+    personal_name = ft.Text(size=18, weight="bold", color="white")
+    personal_avatar = ft.CircleAvatar(radius=24, color="white")
+    personal_empty = ft.Text(color="#8D8D8D")
+    personal_list = ft.ListView(expand=True, spacing=12)
     cloud_summary = ft.Text(color="white")
     local_storage_health = ft.Text(
         "Local storage needs attention." if load_error else "Local JSON storage is ready.",
@@ -96,37 +141,86 @@ def main(page: ft.Page):
     def refresh_summaries():
         # Read the same in-memory history used by the timeline. Recalculate after
         # a successful save so the other tabs update without restarting the app.
-        # These counts are device-wide, NOT personal: we do not have accounts yet.
+        # Profile selection is for a local preview, not a protected user session.
+        member = member_details(member_selector.value)
+        personal_name.value = member["name"]
+        personal_avatar.bgcolor = member["color"]
+        personal_avatar.content = ft.Text(member["initials"], color="white")
         if load_error:
             personal_summary.value = "History unavailable: the local file could not be loaded."
             cloud_summary.value = "Saved activity count unavailable."
+            personal_list.controls = []
+            personal_list.visible = False
+            personal_empty.visible = False
             return
-        personal_summary.value = f"Activities on this device: {len(habits)}"
+        # Match stable IDs, NOT names. Old unassigned records cannot accidentally
+        # become the selected member's records because their ID is missing.
+        member_habits = [
+            habit for habit in habits
+            if habit.get("member_id") == member_selector.value
+        ]
+        personal_summary.value = f"Activities for {member['name']}: {len(member_habits)}"
+        # Build separate cards for Personal; a single Flet control must not be
+        # shared between both tab pages, even if it shows the same activity.
+        personal_list.controls = [
+            make_activity_card(habit) for habit in reversed(member_habits)
+        ]
+        personal_list.visible = bool(member_habits)
+        personal_empty.value = f"No activities for {member['name']} yet."
+        personal_empty.visible = not member_habits
         cloud_summary.value = f"Activities loaded on this device: {len(habits)}"
-
-    refresh_summaries()
 
     def make_activity_card(habit):
         # Reuse the same card for activities loaded from disk and newly saved ones.
+        member = member_details(habit.get("member_id"))
         return ft.Container(
             bgcolor="#0B0C10",
             padding=16,
             border_radius=10,
-            content=ft.Column(
+            content=ft.Row(
                 controls=[
-                    ft.Text(habit["name"], weight="bold", color="white"),
-                    # :g uses compact formatting, e.g. 5 instead of 5.0.
-                    ft.Text(f"Value: {habit['value']:g}", color="#66FCF1"),
-                    ft.Text(
-                        # Example: "01 Nov 2026, 14:30" in local time.
-                        habit["logged_at"].strftime("%d %b %Y, %H:%M"),
-                        size=12,
-                        color="#8D8D8D",
+                    # CircleAvatar makes the colored badge; Text supplies initials.
+                    # The full name stays visible too, so color is not the only
+                    # way to identify the person who recorded this activity.
+                    ft.CircleAvatar(
+                        content=ft.Text(member["initials"], color="white"),
+                        bgcolor=member["color"],
+                        radius=20,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(member["name"], size=12, color="#8D8D8D"),
+                            ft.Text(habit["name"], weight="bold", color="white"),
+                            # :g uses compact formatting, e.g. 5 instead of 5.0.
+                            ft.Text(f"Value: {habit['value']:g}", color="#66FCF1"),
+                            ft.Text(
+                                habit["logged_at"].strftime("%d %b %Y, %H:%M"),
+                                size=12,
+                                color="#8D8D8D",
+                            ),
+                        ],
+                        expand=True,
+                        spacing=4,
                     ),
                 ],
-                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                spacing=12,
             ),
         )
+
+    # Call this only after make_activity_card is defined: Python must know the
+    # helper before refresh_summaries() can use it to create Personal's cards.
+    refresh_summaries()
+
+    def change_member(e):
+        # The dropdown's .value has already changed when Flet calls on_select.
+        # Switching profiles only updates the preview; it does not write a file
+        # or clear a half-filled activity form. The form's selector shows who
+        # will own that entry if the user chooses to save it next.
+        refresh_summaries()
+        page.update()
+
+    member_selector.on_select = change_member
 
     # The file stores save order (oldest first). Reverse it for the display.
     activity_list.controls = [make_activity_card(habit) for habit in reversed(habits)]
@@ -142,6 +236,14 @@ def main(page: ft.Page):
         # Also guard the handler itself, not just the disabled button.
         if load_error is not None:
             return
+
+        # Reject an unexpected/missing selection rather than creating an entry
+        # owned by an invalid member. The normal dropdown offers only valid IDs.
+        if member_selector.value not in DEMO_MEMBERS:
+            member_selector.error_text = "Choose a demo member."
+            page.update()
+            return
+        member_selector.error_text = None
 
         # Empty fields may contain None; "or ''" turns that into a safe string.
         # strip() removes surrounding spaces, so spaces alone are not a name.
@@ -176,6 +278,7 @@ def main(page: ft.Page):
             "name": name,
             "value": value,
             "logged_at": datetime.now(),
+            "member_id": member_selector.value,
         }
         # Save a candidate list BEFORE changing memory or the interface. If disk
         # writing fails, the old history and the user's form input stay intact.
@@ -222,6 +325,12 @@ def main(page: ft.Page):
             controls=[
                 ft.Text("Log New Activity", size=16, weight="bold", color="white"),
                 ft.Divider(height=10, color="#0B0C10"),
+                member_selector,
+                ft.Text(
+                    "Sample profiles only. No passwords or private sessions yet.",
+                    size=12,
+                    color="#8D8D8D",
+                ),
                 activity_name,
                 activity_value,
                 storage_status,
@@ -265,7 +374,7 @@ def main(page: ft.Page):
             controls=[
                 ft.Text("Family Timeline", size=20, weight="bold", color="white"),
                 ft.Text(
-                    "All activities saved on this device. Member accounts are coming later.",
+                    "All local activities. Older entries remain Unassigned; demo profiles are not accounts.",
                     color="#8D8D8D",
                 ),
                 # A failed load must not look like an empty history. The form
@@ -287,20 +396,23 @@ def main(page: ft.Page):
     personal_view = make_tab_panel(
         ft.Column(
             controls=[
-                ft.Icon(ft.Icons.PERSON_OUTLINED, color="#66FCF1", size=40),
                 ft.Text("Personal Profile", size=20, weight="bold", color="white"),
-                ft.Text("Local preview — no member is signed in.", color="#66FCF1"),
+                ft.Row(controls=[personal_avatar, personal_name], spacing=12),
+                ft.Text("Demo preview — no member is signed in.", color="#66FCF1"),
                 ft.Text(
-                    "Once accounts are added, this page will show your profile "
-                    "and only your own activities. Existing entries are not "
-                    "assigned to a family member yet.",
+                    "Choose a demo member in the form to preview their activities. "
+                    "Anyone can switch profiles; this is not private or authenticated.",
                     color="white",
                 ),
                 ft.Divider(color="#45A29E"),
                 personal_summary,
+                personal_empty,
+                personal_list,
             ],
-            # Let longer text scroll on short windows rather than overflow.
-            scroll=ft.ScrollMode.AUTO,
+            # The history ListView scrolls within the remaining vertical space.
+            # Do not make its parent scroll too: an expanding child needs a
+            # bounded height, not an unlimited scrolling area.
+            expand=True,
             spacing=16,
         )
     )
