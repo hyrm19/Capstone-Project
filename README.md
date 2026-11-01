@@ -30,21 +30,29 @@ medical recommendations.
 ## Files and security limits
 
 - `main.py`: startup, login/signup forms, and in-memory session control.
-- `auth.py`: account validation and PBKDF2-SHA256 password verification, using
-  random salts and 600,000 iterations. Plain-text passwords are not saved.
+- `auth.py`: beginner-friendly signup and login logic, written as numbered steps.
+- `account_helpers.py`: account JSON file handling and validation.
 - `dashboard.py`: logging form, badges, tabs, and personal progress.
 - `activities.py`: standard activities, units, and daily calculations.
 - `storage.py`: activity JSON loading, validation, and safe file replacement.
-- `data/members.json`: local accounts, including password hashes.
+- `data/members.json`: local accounts, including **plain-text passwords**.
 - `data/habits.json`: local activity history.
 
 The `data/` folder is ignored by Git. Back it up privately if needed; do not
 publish it. Damaged files are reported rather than silently overwritten.
 
-This is a **local desktop authentication demo**, not a hosted security service.
+This is a **learning-only local login demo**, not a secure authentication service.
+Passwords are saved as readable text, for example `"password": "demo1234"`.
+**Use made-up passwords only. Never reuse a real password or publish this file.**
 Anyone with access to the data files can read or modify them. Activity history
 is not encrypted. There is no email verification, password recovery, or account
 sharing across computers yet. Restarting the app always starts logged out.
+
+Login compares the typed password directly with the saved `password` string.
+Password inputs remain masked in the interface (`password=True`); masking does
+not encrypt the JSON file. Login never changes the account file. Hash-based
+accounts and automatic conversion are no longer supported. Real deployment
+would require replacing this plain-text approach with proper password storage.
 
 Historical demo entries keep their original member IDs; registering with the
 same display name does not claim those entries. Older entries without an owner

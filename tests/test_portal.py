@@ -91,6 +91,9 @@ class PortalTests(unittest.TestCase):
 
     def test_signup_requires_matching_passwords_then_allows_login_and_logout(self):
         self.find("switch_auth").on_click(None)
+        # Plain-text storage must not change masking in either password field.
+        self.assertTrue(self.find("auth_password").password)
+        self.assertTrue(self.find("auth_confirm").password)
         self.find("auth_name").value = "Alex Morgan"
         self.find("auth_email").value = "Alex@Example.com"
         self.find("auth_password").value = "password123"

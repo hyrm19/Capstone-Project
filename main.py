@@ -73,8 +73,8 @@ def main(page: ft.Page):
         spinner = ft.ProgressRing(width=24, height=24, visible=False, data="auth_spinner")
 
         def set_busy(value):
-            # Password hashing deliberately takes work, so show progress and
-            # prevent duplicate submissions or form switches while it runs.
+            # Show progress during account file operations and prevent duplicate
+            # submissions while they run.
             nonlocal busy
             busy = value
             spinner.visible = value
@@ -143,9 +143,9 @@ def main(page: ft.Page):
                         ft.Text("VitalityHub", size=28, weight="bold", color="#66FCF1"),
                         ft.Text("Create a family account" if sign_up else "Welcome back", size=20),
                         ft.Text(
-                            "Local accounts on this computer only. Anyone with access "
-                            "to the data files can read or modify them; this is not "
-                            "a hosted authentication service.", size=12, color="#8D8D8D",
+                            "Learning demo only: passwords are saved as readable text "
+                            "on this computer. Use made-up passwords, never real ones.",
+                            size=12, color="#FBBF24",
                         ),
                         name, email, password, confirm, feedback, spinner,
                         submit_button, switch_button,
@@ -157,7 +157,7 @@ def main(page: ft.Page):
         page.update()
 
     # The app always opens at Login. The dashboard is constructed only after
-    # authenticate() has checked the supplied password against its stored hash.
+    # authenticate() has compared the supplied password with the saved password.
     show_auth()
 
 

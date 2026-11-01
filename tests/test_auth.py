@@ -1,4 +1,4 @@
-"""Verify account validation, password hashing, and safe local file handling."""
+"""Test plain-text password comparisons and local account file handling."""
 
 import json
 import unittest
@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from auth import AccountError, AccountStore, PASSWORD_ITERATIONS
+from auth import AccountError, AccountStore
 
 
 class AccountTests(unittest.TestCase):
@@ -19,31 +19,31 @@ class AccountTests(unittest.TestCase):
     def register(self, email="alex@example.com"):
         return self.store.register("Alex Morgan", email, "Example-password-123")
 
-    def test_registration_normalizes_email_and_stores_only_salted_hash(self):
+    def test_registration_normalizes_email_and_stores_plain_password(self):
         member = self.register(" Alex@Example.COM ")
         self.assertEqual(member["email"], "alex@example.com")
         self.assertTrue(member["id"].startswith("member-"))
         self.assertEqual(set(member), {"id", "name", "email", "color"})
         text = self.path.read_text(encoding="utf-8")
-        self.assertNotIn("Example-password-123", text)
+        self.assertIn("Example-password-123", text)
         record = json.loads(text)[0]
-        self.assertEqual(record["iterations"], PASSWORD_ITERATIONS)
-        self.assertEqual(len(record["salt"]), 32)
-        self.assertEqual(len(record["password_hash"]), 64)
-        # A new store instance can log in using the persisted hash.
+        self.assertEqual(record["password"], "Example-password-123")
+        for key in ("salt", "password_hash", "algorithm", "iterations"):
+            self.assertNotIn(key, record)
+        # A new store instance logs in by comparing the saved password string.
         self.assertEqual(
             AccountStore(self.path).authenticate("ALEX@example.com", "Example-password-123"),
             member,
         )
         self.assertEqual(self.store.members(), [member])
 
-    def test_same_password_uses_different_salts_and_digests(self):
+    def test_same_password_accounts_still_have_separate_member_ids(self):
         first = self.register()
         second = self.register("another@example.com")
         records = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertNotEqual(first["id"], second["id"])
-        self.assertNotEqual(records[0]["salt"], records[1]["salt"])
-        self.assertNotEqual(records[0]["password_hash"], records[1]["password_hash"])
+        self.assertEqual(records[0]["password"], records[1]["password"])
+        self.assertNotIn("password", first)  # The UI still gets display details only.
 
     def test_duplicate_email_does_not_replace_accounts(self):
         self.register()
@@ -96,14 +96,15 @@ class AccountTests(unittest.TestCase):
                     self.store.authenticate("alex@example.com", "password123")
                 self.assertEqual(self.path.read_text(encoding="utf-8"), text)
 
-    def test_invalid_hash_parameters_and_duplicate_records_are_rejected(self):
+    def test_invalid_password_formats_and_duplicate_records_are_rejected(self):
         self.register()
         good = json.loads(self.path.read_text(encoding="utf-8"))[0]
         for records in [
             [good, good],
-            [{**good, "iterations": 1_000_000_000}],
-            [{**good, "salt": "not-hex"}],
-            [{**good, "password_hash": ""}],
+            [{**good, "password": None}],
+            [{**good, "password": ""}],
+            [{**good, "password": 12345678}],
+            [{key: value for key, value in good.items() if key != "password"}],
             [{**good, "id": "demo-alex"}],
         ]:
             with self.subTest(records=records):
@@ -111,10 +112,24 @@ class AccountTests(unittest.TestCase):
                 with self.assertRaises(AccountError):
                     self.store.members()
 
+    def test_password_comparison_is_case_sensitive(self):
+        self.register()
+        with self.assertRaises(AccountError):
+            self.store.authenticate("alex@example.com", "example-password-123")
+
+    def test_login_only_reads_accounts_and_does_not_change_the_file(self):
+        member = self.register()
+        original = self.path.read_bytes()
+        with patch.object(self.store.file, "save", side_effect=AssertionError("Login must not save")):
+            self.assertEqual(self.store.authenticate("alex@example.com", "Example-password-123"), member)
+            with self.assertRaises(AccountError):
+                self.store.authenticate("alex@example.com", "wrong-password")
+        self.assertEqual(self.path.read_bytes(), original)
+
     def test_failed_write_preserves_existing_accounts_and_removes_temp_file(self):
         self.register()
         original = self.path.read_bytes()
-        with patch("auth.os.replace", side_effect=PermissionError("Access denied")):
+        with patch("account_helpers.os.replace", side_effect=PermissionError("Access denied")):
             with self.assertRaises(AccountError):
                 self.register("second@example.com")
         self.assertEqual(self.path.read_bytes(), original)
