@@ -6,14 +6,22 @@ from math import isfinite
 # Flet provides the interface controls. "ft" is a shorter name for the module.
 import flet as ft
 
+# File handling lives in a separate module so the interface stays readable.
+from storage import StorageError, load_habits, save_habits
+
 def main(page: ft.Page):
     # Flet calls main() with the Page that contains this app's interface.
     page.title = "VitalityHub | Premium Capstone"
     page.bgcolor = "#0B0C10" 
     page.padding = 24
-    # Store activity dictionaries in memory for this page session.
-    # This is NOT file or cloud storage: closing the app loses these entries.
-    habits = []
+    # Restore the saved history before building the interface. If loading fails,
+    # keep the original file untouched and block saves until it is repaired.
+    load_error = None
+    try:
+        habits = load_habits()
+    except StorageError as error:
+        habits = []
+        load_error = str(error)
 
     def make_header():
         # Build and return the header control; page.add() displays it later.
@@ -65,10 +73,53 @@ def main(page: ft.Page):
     # expand=True lets it use the available vertical space in its parent Column.
     activity_list = ft.ListView(expand=True, spacing=12, visible=False)
 
+    # Use an inline message for storage errors so they remain visible.
+    storage_status = ft.Text(
+        value=(
+            f"{load_error}\nSaving is disabled to protect your history. "
+            "Back up and repair the file, then restart the app."
+            if load_error else ""
+        ),
+        color="#FCA5A5",
+        visible=load_error is not None,
+    )
+
+    def make_activity_card(habit):
+        # Reuse the same card for activities loaded from disk and newly saved ones.
+        return ft.Container(
+            bgcolor="#0B0C10",
+            padding=16,
+            border_radius=10,
+            content=ft.Column(
+                controls=[
+                    ft.Text(habit["name"], weight="bold", color="white"),
+                    # :g uses compact formatting, e.g. 5 instead of 5.0.
+                    ft.Text(f"Value: {habit['value']:g}", color="#66FCF1"),
+                    ft.Text(
+                        # Example: "01 Nov 2026, 14:30" in local time.
+                        habit["logged_at"].strftime("%d %b %Y, %H:%M"),
+                        size=12,
+                        color="#8D8D8D",
+                    ),
+                ],
+                spacing=4,
+            ),
+        )
+
+    # The file stores save order (oldest first). Reverse it for the display.
+    activity_list.controls = [make_activity_card(habit) for habit in reversed(habits)]
+    activity_list.visible = bool(habits)
+    # A load failure is not the same as having no history: show the warning instead.
+    empty_state.visible = not habits and load_error is None
+
     def save_log(e):
         # Flet passes a click event as e. We do not need its details in this step.
         # This nested function can access the fields, habits, and page created
         # inside main(), without making those variables global.
+
+        # Also guard the handler itself, not just the disabled button.
+        if load_error is not None:
+            return
 
         # Empty fields may contain None; "or ''" turns that into a safe string.
         # strip() removes surrounding spaces, so spaces alone are not a name.
@@ -104,40 +155,31 @@ def main(page: ft.Page):
             "value": value,
             "logged_at": datetime.now(),
         }
-        # Save the data separately from the visual controls that display it.
+        # Save a candidate list BEFORE changing memory or the interface. If disk
+        # writing fails, the old history and the user's form input stay intact.
+        try:
+            save_habits(habits + [habit])
+        except StorageError as error:
+            storage_status.value = f"{error}\nYour entry was not saved. Please try again."
+            storage_status.color = "#FCA5A5"
+            storage_status.visible = True
+            page.update()
+            return
+
+        # Disk saving succeeded, so it is now safe to update the in-memory list.
         habits.append(habit)
         # Insert the card at index 0 (the start) so the newest entry appears first.
         # habits keeps save order; activity_list keeps the visual newest-first order.
-        activity_list.controls.insert(
-            0,
-            ft.Container(
-                bgcolor="#0B0C10",
-                padding=16,
-                border_radius=10,
-                content=ft.Column(
-                    controls=[
-                        ft.Text(habit["name"], weight="bold", color="white"),
-                        # The f-string inserts the number into the label.
-                        # :g uses compact formatting, e.g. 5 instead of 5.0.
-                        ft.Text(f"Value: {habit['value']:g}", color="#66FCF1"),
-                        ft.Text(
-                            # Format the datetime as readable text, for example
-                            # "25 Oct 2026, 14:30" (day, month, year, 24-hour time).
-                            habit["logged_at"].strftime("%d %b %Y, %H:%M"),
-                            size=12,
-                            color="#8D8D8D",
-                        ),
-                    ],
-                    spacing=4,
-                ),
-            ),
-        )
+        activity_list.controls.insert(0, make_activity_card(habit))
         # Replace the placeholder with the list after a successful save.
         empty_state.visible = False
         activity_list.visible = True
         # Clear the form for the next entry. Validation errors are already None.
         activity_name.value = ""
         activity_value.value = ""
+        storage_status.value = "Activity saved to this device."
+        storage_status.color = "#66FCF1"
+        storage_status.visible = True
         # Send all the changed controls to the interface in one update.
         page.update()
     
@@ -154,6 +196,7 @@ def main(page: ft.Page):
                 ft.Divider(height=10, color="#0B0C10"),
                 activity_name,
                 activity_value,
+                storage_status,
                 ft.Button(
                     "Save Log",
                     icon=ft.Icons.SAVE_OUTLINED,
@@ -166,6 +209,7 @@ def main(page: ft.Page):
                     # Pass the function itself, not save_log(): Flet should call
                     # it when clicked, rather than while building the interface.
                     on_click=save_log,
+                    disabled=load_error is not None,
                     style=ft.ButtonStyle(
                         shape=ft.RoundedRectangleBorder(radius=10),
                     ),
@@ -225,5 +269,7 @@ def main(page: ft.Page):
         ),
     )
 
-# Start Flet and let it call main() to build the page.
-ft.run(main)
+# Only launch when running this file directly. Tests can import main() without
+# opening a desktop window, which makes the saving behavior easier to check.
+if __name__ == "__main__":
+    ft.run(main)

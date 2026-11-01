@@ -1,0 +1,8 @@
+# Local activity history can contain private family information.
+/data/
+
+# Generated Python files and local environment configuration.
+__pycache__/
+*.py[cod]
+.venv/
+.env
