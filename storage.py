@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from activities import ACTIVITY_UNITS
+
 
 # Anchor the path to this source file, not the terminal's current directory.
 # Starting the app from another directory will still use the same data file.
@@ -55,6 +57,15 @@ def _decode_habits(records):
             if not isinstance(member_id, str) or not member_id.strip():
                 raise ValueError("An activity has an invalid member ID.")
             habit["member_id"] = member_id
+        # Unit is optional for backward compatibility. Never infer it from an
+        # old activity name: "Running: 5" might have meant minutes, not km.
+        if "unit" in record:
+            unit = record["unit"]
+            if not isinstance(unit, str) or unit != ACTIVITY_UNITS.get(habit["name"]):
+                raise ValueError("An activity has an invalid or mismatched unit.")
+            if unit == "steps" and value % 1 != 0:
+                raise ValueError("Steps must be a whole number.")
+            habit["unit"] = unit
         habits.append(habit)
     # Validate the entire file rather than silently skipping damaged entries.
     # Otherwise a later save could accidentally erase the entries we skipped.
@@ -92,6 +103,8 @@ def save_habits(habits, path=DATA_FILE):
                 # Add the optional key only when it exists. This lets old and
                 # new entries live together without changing historical owners.
                 **({"member_id": habit["member_id"]} if "member_id" in habit else {}),
+                # Preserve explicit units only; leave historical entries alone.
+                **({"unit": habit["unit"]} if "unit" in habit else {}),
             }
             for habit in habits
         ]

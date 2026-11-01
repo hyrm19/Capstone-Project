@@ -6,6 +6,8 @@ from math import isfinite
 # Flet provides the interface controls. "ft" is a shorter name for the module.
 import flet as ft
 
+from activities import ACTIVITY_UNITS, canonical_activity
+
 # File handling lives in a separate module so the interface stays readable.
 from storage import DATA_FILE, StorageError, load_habits, save_habits
 
@@ -39,6 +41,9 @@ def main(page: ft.Page):
     # Flet calls main() with the Page that contains this app's interface.
     page.title = "VitalityHub | Premium Capstone"
     page.bgcolor = "#0B0C10" 
+    # AutoComplete uses Flet's theme for its built-in input and suggestion menu.
+    # A dark theme keeps those controls readable against our existing dark cards.
+    page.theme_mode = ft.ThemeMode.DARK
     page.padding = 24
     # Restore the saved history before building the interface. If loading fails,
     # keep the original file untouched and block saves until it is repaired.
@@ -70,9 +75,6 @@ def main(page: ft.Page):
             ),
         )
 
-    # Reserved for the future AutoComplete feature; not used by the form yet.
-    exercise_options = ["Running", "Swimming", "Cycling", "Yoga", "Water Intake", "Gym"]
-
     # Choosing a sample member changes who owns NEW saves and whose history is
     # shown in Personal. It never changes ownership of already saved entries.
     # This is NOT authentication: anyone using the app can choose any sample.
@@ -88,19 +90,55 @@ def main(page: ft.Page):
         ],
     )
 
-    # Keep references to the input controls so save_log() can read their .value,
-    # show validation messages through .error_text, and clear them after a save.
-    activity_name = ft.TextField(
-        label="Activity Name", color="white", border_color="#45A29E"
+    # AutoComplete filters these suggestions as the user types. Its .value is
+    # still plain text, so saving must validate it even if no suggestion was
+    # clicked. The key is used for matching; value is the displayed activity name.
+    activity_name = ft.AutoComplete(
+        suggestions=[
+            ft.AutoCompleteSuggestion(key=name, value=name)
+            for name in ACTIVITY_UNITS
+        ],
+        suggestions_max_height=200,
     )
+    # Unlike TextField, AutoComplete has no error_text property in this Flet
+    # version. Place a separate error label directly beneath it instead.
+    activity_name_error = ft.Text(color="#FCA5A5", size=12, visible=False)
     activity_value = ft.TextField(
-        label="Value (Distance / Cups / Mins)",
+        label="Value (choose an activity first)",
         color="white",
         border_color="#45A29E",
         # Requests a numeric keyboard on supported devices. Users can still
         # enter invalid text, so save_log() must validate the value itself.
         keyboard_type=ft.KeyboardType.NUMBER,
     )
+
+    def update_value_label():
+        # Derive the unit from the CURRENT text, not a previous suggestion.
+        # This prevents choosing Running, editing it to Yoga, and keeping km.
+        name = canonical_activity(activity_name.value)
+        unit = ACTIVITY_UNITS.get(name)
+        activity_value.label = f"Value ({unit})" if unit else "Value (choose an activity first)"
+        activity_value.helper_text = (
+            "Enter a whole number of steps." if name == "Steps" else None
+        )
+
+    def change_activity(e):
+        # on_change runs for typing; show the matching unit as soon as the name
+        # is recognized. Validation errors disappear while the user corrects it.
+        activity_name_error.value = ""
+        activity_name_error.visible = False
+        activity_value.error_text = None
+        update_value_label()
+        page.update()
+
+    def select_activity(e):
+        # on_select includes the suggestion itself. Explicitly copy its text
+        # into .value so both clicking and typing use the same save path.
+        activity_name.value = e.selection.value
+        change_activity(e)
+
+    activity_name.on_change = change_activity
+    activity_name.on_select = select_activity
     # Show this placeholder until the first valid activity has been saved.
     empty_state = ft.Column(
         controls=[
@@ -192,7 +230,12 @@ def main(page: ft.Page):
                             ft.Text(member["name"], size=12, color="#8D8D8D"),
                             ft.Text(habit["name"], weight="bold", color="white"),
                             # :g uses compact formatting, e.g. 5 instead of 5.0.
-                            ft.Text(f"Value: {habit['value']:g}", color="#66FCF1"),
+                            # Missing units belong to older records. Keep that
+                            # uncertainty visible instead of guessing a unit.
+                            ft.Text(
+                                f"Value: {habit['value']:g} {habit.get('unit', '(unit unspecified)')}",
+                                color="#66FCF1",
+                            ),
                             ft.Text(
                                 habit["logged_at"].strftime("%d %b %Y, %H:%M"),
                                 size=12,
@@ -245,14 +288,15 @@ def main(page: ft.Page):
             return
         member_selector.error_text = None
 
-        # Empty fields may contain None; "or ''" turns that into a safe string.
-        # strip() removes surrounding spaces, so spaces alone are not a name.
-        name = (activity_name.value or "").strip()
+        # Normalize both typed and selected names into the standard spelling.
+        # Unsupported text has no known unit, so explain how to correct it.
+        name = canonical_activity(activity_name.value)
         raw_value = (activity_value.value or "").strip()
-        # Reset old error messages on each attempt. None removes an error.
-        # The conditional expression sets a name error only when name is empty.
-        activity_name.error_text = None if name else "Enter an activity name."
+        activity_name_error.value = "" if name else "Choose or type one of the suggested activities."
+        activity_name_error.visible = name is None
         activity_value.error_text = None
+        # Refresh here too in case the user typed a name and immediately saved.
+        update_value_label()
 
         try:
             # float() accepts whole numbers and decimals, such as 5 and 2.5.
@@ -263,10 +307,14 @@ def main(page: ft.Page):
             if not isfinite(value) or value <= 0:
                 # Send these invalid numbers to the same error handler below.
                 raise ValueError
+            # Fractional km, minutes, and cups are useful (e.g. 1.5 cups), but a
+            # step count must be whole. 1000.0 is fine; 1000.5 is not.
+            if name == "Steps" and not value.is_integer():
+                activity_value.error_text = "Enter a whole number of steps."
         except ValueError:
             activity_value.error_text = "Enter a number greater than zero."
 
-        if activity_name.error_text or activity_value.error_text:
+        if activity_name_error.visible or activity_value.error_text:
             # Refresh the interface to display the errors, then stop early.
             # Nothing is saved and the user's input remains available to fix.
             page.update()
@@ -279,6 +327,9 @@ def main(page: ft.Page):
             "value": value,
             "logged_at": datetime.now(),
             "member_id": member_selector.value,
+            # Store the unit NOW rather than deriving it when reading history.
+            # If measurement choices change later, this entry keeps its meaning.
+            "unit": ACTIVITY_UNITS[name],
         }
         # Save a candidate list BEFORE changing memory or the interface. If disk
         # writing fails, the old history and the user's form input stay intact.
@@ -305,6 +356,7 @@ def main(page: ft.Page):
         # Clear the form for the next entry. Validation errors are already None.
         activity_name.value = ""
         activity_value.value = ""
+        update_value_label()
         storage_status.value = "Activity saved to this device."
         storage_status.color = "#66FCF1"
         storage_status.visible = True
@@ -331,7 +383,15 @@ def main(page: ft.Page):
                     size=12,
                     color="#8D8D8D",
                 ),
-                activity_name,
+                ft.Column(
+                    controls=[
+                        ft.Text("Activity (type to see suggestions)", color="white", size=12),
+                        activity_name,
+                        activity_name_error,
+                    ],
+                    spacing=6,
+                    tight=True,
+                ),
                 activity_value,
                 storage_status,
                 ft.Button(

@@ -36,6 +36,30 @@ class StorageTests(unittest.TestCase):
         save_habits([], self.path)
         self.assertEqual(load_habits(self.path), [])
 
+    def test_units_round_trip_without_modifying_legacy_data(self):
+        legacy = {**self.habit, "name": "Running"}
+        records = [legacy, {**legacy, "unit": "km", "member_id": "demo-alex"}]
+        save_habits(records, self.path)
+        self.assertEqual(load_habits(self.path), records)
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("unit", stored[0])
+        self.assertEqual(stored[1]["unit"], "km")
+
+    def test_invalid_units_and_fractional_steps_cannot_replace_history(self):
+        save_habits([self.habit], self.path)
+        original = self.path.read_bytes()
+        for record in [
+            {**self.habit, "unit": None},
+            {**self.habit, "unit": ""},
+            {**self.habit, "unit": 5},
+            {**self.habit, "unit": "km"},  # Swimming uses minutes, not km.
+            {**self.habit, "name": "Steps", "unit": "steps"},  # 2.5 steps.
+        ]:
+            with self.subTest(record=record):
+                with self.assertRaises(StorageError):
+                    save_habits([record], self.path)
+                self.assertEqual(self.path.read_bytes(), original)
+
     def test_member_ids_round_trip_without_changing_legacy_entries(self):
         # Member IDs do not need to be in the current demo list. Storage keeps
         # ownership data; the interface decides how to label an unknown member.
@@ -72,6 +96,8 @@ class StorageTests(unittest.TestCase):
             json.dumps([{**good, "logged_at": "yesterday"}]),
             json.dumps([{**good, "member_id": None}]),
             json.dumps([{**good, "member_id": " "}]),
+            json.dumps([{**good, "unit": "km"}]),
+            json.dumps([{**good, "unit": None}]),
             # A bad second record must not silently discard part of the history.
             json.dumps([good, {}]),
         ]
