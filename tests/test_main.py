@@ -28,6 +28,12 @@ class TestPage:
 
 class AppTests(unittest.TestCase):
     def setUp(self):
+        # Freeze only the app's clock, not the operating system clock. Tests for
+        # "today" should keep the same results even when run around midnight.
+        clock = patch("main.datetime", wraps=datetime)
+        self.clock = clock.start()
+        self.clock.now.return_value = datetime(2026, 11, 1, 12, 0)
+        self.addCleanup(clock.stop)
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "habits.json"
@@ -58,6 +64,10 @@ class AppTests(unittest.TestCase):
         self.timeline, self.personal, self.cloud = self.tab_views.controls
         self.empty, self.entries = self.timeline.content.controls[-2:]
         self.personal_summary = self.personal.content.controls[5]
+        self.daily_progress = self.personal.content.controls[6]
+        self.progress_date = self.daily_progress.controls[0]
+        self.steps_label, self.steps_bar = self.daily_progress.controls[2:4]
+        self.water_label, self.water_bar = self.daily_progress.controls[4:6]
         self.personal_empty, self.personal_entries = self.personal.content.controls[-2:]
         self.cloud_health = self.cloud.content.controls[5]
         self.cloud_summary = self.cloud.content.controls[6]
@@ -78,6 +88,69 @@ class AppTests(unittest.TestCase):
 
     def card_value(self, card):
         return card.content.controls[1].controls[2].value
+
+    def test_daily_progress_updates_after_saves_and_member_changes(self):
+        self.build_app()
+        self.assertEqual(self.steps_bar.value, 0)
+        self.assertEqual(self.water_bar.value, 0)
+        self.enter_activity("Steps", "2000")
+        self.enter_activity("Water Intake", "3")
+        self.assertEqual(self.steps_bar.value, 0.25)
+        self.assertEqual(self.water_bar.value, 0.375)
+        self.assertEqual(self.steps_label.value, "Steps: 2,000 / 8,000 (25%)")
+        self.assertEqual(self.water_label.value, "Water: 3 / 8 cups (37.5%)")
+        self.select_member("demo-jamie")
+        self.assertEqual(self.steps_bar.value, 0)
+        self.assertEqual(self.water_bar.value, 0)
+        self.enter_activity("Water Intake", "1.5")
+        self.assertEqual(self.water_bar.value, 1.5 / 8)
+        self.select_member("demo-alex")
+        self.assertEqual(self.water_bar.value, 0.375)
+        # A new launch derives the same totals from saved entries, not counters.
+        self.build_app()
+        self.assertEqual(self.steps_bar.value, 0.25)
+        self.assertEqual(self.water_bar.value, 0.375)
+
+    def test_daily_progress_caps_bars_but_preserves_above_goal_totals(self):
+        self.build_app()
+        self.enter_activity("Steps", "8000")
+        self.enter_activity("Steps", "4000")
+        self.enter_activity("Water Intake", "10")
+        self.assertEqual(self.steps_bar.value, 1)
+        self.assertEqual(self.water_bar.value, 1)
+        self.assertEqual(self.steps_label.value, "Steps: 12,000 / 8,000 (150%)")
+        self.assertEqual(self.water_label.value, "Water: 10 / 8 cups (125%)")
+
+    def test_daily_progress_refreshes_date_on_tab_navigation(self):
+        self.build_app()
+        self.enter_activity("Steps", "2000")
+        self.clock.now.return_value = datetime(2026, 11, 2, 0, 1)
+        self.tabs.selected_index = 1
+        self.tabs.on_change(None)
+        self.assertEqual(self.steps_bar.value, 0)
+        self.assertIn("02 Nov 2026", self.progress_date.value)
+        # History is not deleted just because the day changed.
+        self.assertEqual(len(self.personal_entries.controls), 1)
+
+    def test_failed_save_does_not_change_daily_progress(self):
+        self.build_app()
+        self.enter_activity("Water Intake", "2")
+        with patch("main.save_habits", side_effect=StorageError("Disk full")):
+            self.enter_activity("Water Intake", "3")
+        self.assertEqual(self.water_bar.value, 0.25)
+        self.assertEqual(self.water_label.value, "Water: 2 / 8 cups (25%)")
+
+    def test_old_or_unitless_steps_are_not_included_in_daily_progress(self):
+        records = [
+            {"name": "Steps", "value": 5000, "logged_at": datetime(2026, 10, 31),
+             "member_id": "demo-alex", "unit": "steps"},
+            {"name": "Steps", "value": 6000, "logged_at": datetime(2026, 11, 1),
+             "member_id": "demo-alex"},
+        ]
+        save_habits(records, self.path)
+        self.build_app()
+        self.assertEqual(self.steps_bar.value, 0)
+        self.assertEqual(len(self.personal_entries.controls), 2)
 
     def test_autocomplete_suggestions_and_selection_update_units(self):
         self.build_app()
@@ -183,6 +256,7 @@ class AppTests(unittest.TestCase):
         self.select_member("demo-jamie")
         self.assertTrue(self.personal_empty.visible)
         self.assertFalse(self.personal_entries.visible)
+        self.assertTrue(self.daily_progress.visible)
         self.enter_activity("Yoga", "20")
         self.assertEqual(len(self.entries.controls), 2)
         self.assertEqual([self.card_name(c) for c in self.personal_entries.controls], ["Yoga"])
@@ -269,6 +343,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("unavailable", self.cloud_summary.value)
         self.assertIn("needs attention", self.cloud_health.value)
         self.assertFalse(self.personal_entries.visible)
+        self.assertFalse(self.daily_progress.visible)
         self.assertTrue(self.timeline.content.controls[2].visible)
         self.assertTrue(self.cloud.content.controls[-1].visible)
         self.enter_activity()

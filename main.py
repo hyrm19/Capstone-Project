@@ -6,7 +6,10 @@ from math import isfinite
 # Flet provides the interface controls. "ft" is a shorter name for the module.
 import flet as ft
 
-from activities import ACTIVITY_UNITS, canonical_activity
+from activities import (
+    ACTIVITY_UNITS, DEMO_STEP_GOAL, DEMO_WATER_GOAL,
+    canonical_activity, daily_totals,
+)
 
 # File handling lives in a separate module so the interface stays readable.
 from storage import DATA_FILE, StorageError, load_habits, save_habits
@@ -81,7 +84,7 @@ def main(page: ft.Page):
     member_selector = ft.Dropdown(
         label="Demo member (not a login)",
         value="demo-alex",
-        color="white",
+        color="white",          
         bgcolor="#1F2833",
         border_color="#45A29E",
         options=[
@@ -119,7 +122,10 @@ def main(page: ft.Page):
         unit = ACTIVITY_UNITS.get(name)
         activity_value.label = f"Value ({unit})" if unit else "Value (choose an activity first)"
         activity_value.helper_text = (
-            "Enter a whole number of steps." if name == "Steps" else None
+            "Enter additional whole-number steps, not your daily total."
+            if name == "Steps" else
+            "Enter cups to add to today's total."
+            if name == "Water Intake" else None
         )
 
     def change_activity(e):
@@ -169,7 +175,38 @@ def main(page: ft.Page):
     personal_name = ft.Text(size=18, weight="bold", color="white")
     personal_avatar = ft.CircleAvatar(radius=24, color="white")
     personal_empty = ft.Text(color="#8D8D8D")
-    personal_list = ft.ListView(expand=True, spacing=12)
+    # Personal now scrolls as one page (profile + progress + history). Use a
+    # normal Column for its cards instead of nesting an expanding ListView
+    # inside an unlimited scrolling parent. Family keeps its own ListView.
+    personal_list = ft.Column(tight=True, spacing=12)
+    progress_date = ft.Text(weight="bold", color="white")
+    steps_label = ft.Text(color="white")
+    water_label = ft.Text(color="white")
+    # ProgressBar expects a fraction from 0 to 1, not a percentage from 0 to 100.
+    steps_bar = ft.ProgressBar(value=0, color="#66FCF1", bgcolor="#0B0C10")
+    water_bar = ft.ProgressBar(value=0, color="#60A5FA", bgcolor="#0B0C10")
+    daily_progress_panel = ft.Column(
+        controls=[
+            progress_date,
+            ft.Text(
+                f"Demo goals: {DEMO_STEP_GOAL:,} steps and {DEMO_WATER_GOAL:g} cups "
+                "— not medical recommendations.",
+                size=12,
+                color="#8D8D8D",
+            ),
+            steps_label,
+            steps_bar,
+            water_label,
+            water_bar,
+            ft.Text(
+                "Each check-in adds to today's total. Older entries without units are excluded.",
+                size=12,
+                color="#8D8D8D",
+            ),
+        ],
+        spacing=8,
+        tight=True,
+    )
     cloud_summary = ft.Text(color="white")
     local_storage_health = ft.Text(
         "Local storage needs attention." if load_error else "Local JSON storage is ready.",
@@ -184,6 +221,9 @@ def main(page: ft.Page):
         personal_name.value = member["name"]
         personal_avatar.bgcolor = member["color"]
         personal_avatar.content = ft.Text(member["initials"], color="white")
+        # A damaged file means totals are unknown, NOT zero. Hide the progress
+        # section and let the existing load-error message explain the problem.
+        daily_progress_panel.visible = load_error is None
         if load_error:
             personal_summary.value = "History unavailable: the local file could not be loaded."
             cloud_summary.value = "Saved activity count unavailable."
@@ -198,6 +238,23 @@ def main(page: ft.Page):
             if habit.get("member_id") == member_selector.value
         ]
         personal_summary.value = f"Activities for {member['name']}: {len(member_habits)}"
+        today = datetime.now().date()
+        totals = daily_totals(habits, member_selector.value, today=today)
+        progress_date.value = f"Today's progress — {today.strftime('%d %b %Y')}"
+        step_ratio = totals["steps"] / DEMO_STEP_GOAL
+        water_ratio = totals["cups"] / DEMO_WATER_GOAL
+        # Keep actual totals and percentages visible above the goal, but stop
+        # the bars at 100%: Flet's visual range is only 0 through 1.
+        steps_label.value = (
+            f"Steps: {totals['steps']:,} / {DEMO_STEP_GOAL:,} "
+            f"({step_ratio * 100:g}%)"
+        )
+        water_label.value = (
+            f"Water: {totals['cups']:g} / {DEMO_WATER_GOAL:g} cups "
+            f"({water_ratio * 100:g}%)"
+        )
+        steps_bar.value = min(step_ratio, 1.0)
+        water_bar.value = min(water_ratio, 1.0)
         # Build separate cards for Personal; a single Flet control must not be
         # shared between both tab pages, even if it shows the same activity.
         personal_list.controls = [
@@ -466,13 +523,13 @@ def main(page: ft.Page):
                 ),
                 ft.Divider(color="#45A29E"),
                 personal_summary,
+                daily_progress_panel,
                 personal_empty,
                 personal_list,
             ],
-            # The history ListView scrolls within the remaining vertical space.
-            # Do not make its parent scroll too: an expanding child needs a
-            # bounded height, not an unlimited scrolling area.
-            expand=True,
+            # Scroll the whole Personal page so progress and history remain
+            # reachable even in a short window. Children do not expand vertically.
+            scroll=ft.ScrollMode.AUTO,
             spacing=16,
         )
     )
@@ -505,10 +562,18 @@ def main(page: ft.Page):
     # TabBarView (page contents). Both MUST be inside this SAME Tabs control.
     # Previously the tab bar existed alone, with one unrelated panel below it,
     # so choosing a label could not change the contents of that panel.
+    def change_tab(e):
+        # Recalculate the local date when navigating too. For example, returning
+        # to Personal after midnight should not keep displaying yesterday's total.
+        # We also refresh after saves and member changes; no timer is needed here.
+        refresh_summaries()
+        page.update()
+
     data_panel = ft.Tabs(
         selected_index=0,
         animation_duration=300,
         length=3,
+        on_change=change_tab,
         expand=True,
         content=ft.Column(
             controls=[
