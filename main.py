@@ -7,7 +7,7 @@ from math import isfinite
 import flet as ft
 
 # File handling lives in a separate module so the interface stays readable.
-from storage import StorageError, load_habits, save_habits
+from storage import DATA_FILE, StorageError, load_habits, save_habits
 
 def main(page: ft.Page):
     # Flet calls main() with the Page that contains this app's interface.
@@ -83,6 +83,28 @@ def main(page: ft.Page):
         color="#FCA5A5",
         visible=load_error is not None,
     )
+
+    # Each tab owns its own controls. Do not put the same Text control into two
+    # views: controls have one place in the interface, even if their text matches.
+    personal_summary = ft.Text(color="#66FCF1")
+    cloud_summary = ft.Text(color="white")
+    local_storage_health = ft.Text(
+        "Local storage needs attention." if load_error else "Local JSON storage is ready.",
+        color="#FCA5A5" if load_error else "#66FCF1",
+    )
+
+    def refresh_summaries():
+        # Read the same in-memory history used by the timeline. Recalculate after
+        # a successful save so the other tabs update without restarting the app.
+        # These counts are device-wide, NOT personal: we do not have accounts yet.
+        if load_error:
+            personal_summary.value = "History unavailable: the local file could not be loaded."
+            cloud_summary.value = "Saved activity count unavailable."
+            return
+        personal_summary.value = f"Activities on this device: {len(habits)}"
+        cloud_summary.value = f"Activities loaded on this device: {len(habits)}"
+
+    refresh_summaries()
 
     def make_activity_card(habit):
         # Reuse the same card for activities loaded from disk and newly saved ones.
@@ -163,6 +185,9 @@ def main(page: ft.Page):
             storage_status.value = f"{error}\nYour entry was not saved. Please try again."
             storage_status.color = "#FCA5A5"
             storage_status.visible = True
+            # Show the failed write in diagnostics as well as beside the form.
+            local_storage_health.value = f"Last save failed: {error}"
+            local_storage_health.color = "#FCA5A5"
             page.update()
             return
 
@@ -180,6 +205,9 @@ def main(page: ft.Page):
         storage_status.value = "Activity saved to this device."
         storage_status.color = "#66FCF1"
         storage_status.visible = True
+        local_storage_health.value = "Last activity saved successfully to this device."
+        local_storage_health.color = "#66FCF1"
+        refresh_summaries()
         # Send all the changed controls to the interface in one update.
         page.update()
     
@@ -221,39 +249,115 @@ def main(page: ft.Page):
         ),
     )
 
-    # Right-hand panel: tab navigation above the activity display.
-    # The tabs are currently placeholders; separate tab views come in a later step.
-    data_panel = ft.Column(
-        controls=[
-            ft.Tabs(
-                selected_index=0,
-                animation_duration=300,
-                length=3,
-                content=ft.TabBar(
+    def make_tab_panel(content):
+        # Give all three pages the same border, background, and padding without
+        # repeating those settings. Each call creates a NEW Container instance.
+        return ft.Container(
+            bgcolor="#1F2833",
+            padding=20,
+            border_radius=16,
+            border=ft.Border.all(1, "#45A29E"),
+            content=content,
+        )
+
+    timeline_view = make_tab_panel(
+        ft.Column(
+            controls=[
+                ft.Text("Family Timeline", size=20, weight="bold", color="white"),
+                ft.Text(
+                    "All activities saved on this device. Member accounts are coming later.",
+                    color="#8D8D8D",
+                ),
+                # A failed load must not look like an empty history. The form
+                # shows the full error and recovery instructions; this explains
+                # why the timeline itself has no entries in that situation.
+                ft.Text(
+                    "History could not be loaded. Check the warning beside the form.",
+                    color="#FCA5A5",
+                    visible=load_error is not None,
+                ),
+                empty_state,
+                activity_list,
+            ],
+            expand=True,
+            spacing=12,
+        )
+    )
+
+    personal_view = make_tab_panel(
+        ft.Column(
+            controls=[
+                ft.Icon(ft.Icons.PERSON_OUTLINED, color="#66FCF1", size=40),
+                ft.Text("Personal Profile", size=20, weight="bold", color="white"),
+                ft.Text("Local preview — no member is signed in.", color="#66FCF1"),
+                ft.Text(
+                    "Once accounts are added, this page will show your profile "
+                    "and only your own activities. Existing entries are not "
+                    "assigned to a family member yet.",
+                    color="white",
+                ),
+                ft.Divider(color="#45A29E"),
+                personal_summary,
+            ],
+            # Let longer text scroll on short windows rather than overflow.
+            scroll=ft.ScrollMode.AUTO,
+            spacing=16,
+        )
+    )
+
+    cloud_view = make_tab_panel(
+        ft.Column(
+            controls=[
+                ft.Text("Cloud Status", size=20, weight="bold", color="white"),
+                ft.Text("Airtable: not connected", color="#FBBF24", weight="bold"),
+                ft.Text(
+                    "Cloud syncing is not implemented yet. Activities are saved "
+                    "only on this computer, not shared with other devices.",
+                    color="white",
+                ),
+                ft.Divider(color="#45A29E"),
+                ft.Text("Local storage diagnostics", weight="bold", color="white"),
+                local_storage_health,
+                cloud_summary,
+                ft.Text(f"Storage file: {DATA_FILE}", size=12, color="#8D8D8D"),
+                # Show the real load error here too, so diagnostics is useful
+                # even while the timeline cannot display the damaged history.
+                ft.Text(load_error or "", color="#FCA5A5", visible=load_error is not None),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=16,
+        )
+    )
+
+    # Tabs is the shared controller: it connects a TabBar (clickable labels) to a
+    # TabBarView (page contents). Both MUST be inside this SAME Tabs control.
+    # Previously the tab bar existed alone, with one unrelated panel below it,
+    # so choosing a label could not change the contents of that panel.
+    data_panel = ft.Tabs(
+        selected_index=0,
+        animation_duration=300,
+        length=3,
+        expand=True,
+        content=ft.Column(
+            controls=[
+                ft.TabBar(
                     tabs=[
                         ft.Tab(label="Family Timeline", icon=ft.Icons.DASHBOARD_OUTLINED),
-                        ft.Tab(label="Personal Logs", icon=ft.Icons.PERSON_OUTLINED),
+                        ft.Tab(label="Personal", icon=ft.Icons.PERSON_OUTLINED),
                         ft.Tab(label="Cloud Status", icon=ft.Icons.CLOUD_SYNC_OUTLINED),
                     ],
-                )
-            ),
-            ft.Container(
-                bgcolor="#1F2833",
-                padding=20,
-                border_radius=16,
-                border=ft.Border.all(1, "#45A29E"),
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Column(
-                    # Both controls stay in the layout definition, but their
-                    # visible properties decide which one the user can see.
-                    controls=[empty_state, activity_list],
+                ),
+                # Page order matches label order exactly: index 0 is Timeline,
+                # index 1 is Personal, and index 2 is Cloud Status. Flet handles
+                # selection and animation; no custom click handler is needed.
+                ft.TabBarView(
+                    controls=[timeline_view, personal_view, cloud_view],
                     expand=True,
                 ),
-            ),
-        ],
-        expand=True,
-        spacing=12,
+            ],
+            expand=True,
+            spacing=12,
+        ),
     )
 
     # Attach the finished controls to the page: header, spacer, then a Row
