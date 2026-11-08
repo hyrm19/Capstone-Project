@@ -1,106 +1,106 @@
-"""Learning-only local login with readable passwords, NOT for real accounts."""
+"""Simple demo authentication: accounts are in Airtable, passwords are strings."""
 
+import re
+import threading
 from uuid import uuid4
 
-# These helpers handle the technical details. You do not need to understand
-# temporary files to follow the signup/login steps below.
-from account_helpers import (
-    ACCOUNT_LOCK, BADGE_COLORS, MEMBERS_FILE, AccountError, AccountFile,
-    normalize_email,
-)
+from airtable_api import AirtableError, read_accounts, create_account
+
+
+BADGE_COLORS = ("#2563EB", "#7C3AED", "#047857", "#BE123C", "#B45309")
+SIGNUP_LOCK = threading.Lock()
+
+
+class AccountError(Exception):
+    """main.py displays this message when validation or a cloud request fails."""
+
+
+def normalize_email(email):
+    email = email.strip().casefold()
+    if len(email) > 254 or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) is None:
+        raise AccountError("Enter a valid email address.")
+    return email
 
 
 def public_member(account):
-    """Take only the information that the dashboard needs from an account."""
-    return {
-        "id": account["id"],
-        "name": account["name"],
-        "email": account["email"],
-        "color": account["color"],
-    }
+    # The dashboard needs identity and color, never the stored password.
+    return {"id": account["id"], "name": account["name"], "email": account["email"], "color": account["color"]}
 
 
 class AccountStore:
-    """An object that groups the account functions used by main.py."""
+    """Use Airtable as the account database. No account files are read or saved."""
 
-    def __init__(self, path=MEMBERS_FILE):
-        # __init__ runs when main.py creates AccountStore(). "self" means this
-        # particular object. Remember its file so all methods use the same data.
-        self.file = AccountFile(path)
-        self.path = self.file.path
+    def _accounts(self):
+        try:
+            accounts = read_accounts()
+        except AirtableError as error:
+            raise AccountError(str(error)) from None
+        # Detect incomplete or duplicate account rows instead of picking the
+        # first matching password. Airtable does not enforce unique emails.
+        ids, emails = set(), set()
+        for account in accounts:
+            for key in ("id", "name", "email", "password", "color"):
+                if not isinstance(account.get(key), str) or not account[key].strip():
+                    raise AccountError("A Members row is incomplete. Check id, name, email, password, and color.")
+            email = normalize_email(account["email"])
+            if re.fullmatch(r"#[0-9a-fA-F]{6}", account["color"]) is None:
+                raise AccountError("Use a hex color such as #2563EB in the Members color column.")
+            if account["id"] in ids or email in emails:
+                raise AccountError("Duplicate member IDs or emails in Members. Fix the rows before logging in.")
+            ids.add(account["id"])
+            emails.add(email)
+        return accounts
 
     def members(self):
-        """Get the family members' names and colors for activity badges."""
-        accounts = self.file.load()
+        """Read display-safe family profiles, without downloading passwords to disk."""
         members = []
-        for account in accounts:
+        for account in self._accounts():
             members.append(public_member(account))
         return members
 
     def register(self, name, email, password):
-        """SIGN UP: check input, check duplicates, create an account, save it."""
-        # 1. Check the input. strip() removes unwanted spaces around the name.
-        # Raising AccountError stops this function; main.py displays the message.
+        # 1. Check the user's input before making a request.
         name = name.strip()
         if len(name) < 1 or len(name) > 60:
             raise AccountError("Enter a display name between 1 and 60 characters.")
-        email = normalize_email(email)  # " Alex@Example.com " -> "alex@example.com"
-        if len(password) < 8 or len(password) > 128 or password.strip() == "":
+        email = normalize_email(email)
+        if len(password) < 8 or len(password) > 128 or not password.strip():
             raise AccountError("Use a password of 8–128 characters, not just spaces.")
 
-        # The helper lock simply makes overlapping signup attempts take turns.
-        with ACCOUNT_LOCK:
-            # 2. Look through existing accounts for the same email.
-            accounts = self.file.load()
+        # This lock makes signups in this app take turns. It cannot guarantee
+        # email uniqueness across multiple computers; this is a learning demo.
+        with SIGNUP_LOCK:
+            # 2. Look through the ONLINE accounts for an existing email.
+            accounts = self._accounts()
             for account in accounts:
-                if account["email"] == email:
+                if normalize_email(account["email"]) == email:
                     raise AccountError("An account with this email already exists.")
-
-            # 3. Build a dictionary for the new member. uuid4 creates a unique
-            # ID, so two people with the same name still have separate histories.
-            # % cycles through badge colors: 0, 1, 2, 3, 4, then back to 0.
-            color_index = len(accounts) % len(BADGE_COLORS)
-            new_account = {
-                "id": "member-" + uuid4().hex,
-                "name": name,
-                "email": email,
-                "color": BADGE_COLORS[color_index],
-                # Learning demo only: save exactly what the user typed.
-                # Anyone opening members.json can read this password, so never
-                # use a real password or publish this data file.
-                "password": password,
+            # 3. Create an ID that stays the same across all computers, then
+            # send the five account columns to Members, NOT the Habits table.
+            account = {
+                "id": "member-" + uuid4().hex, "name": name, "email": email,
+                "password": password,  # Demo only: never use a real password.
+                "color": BADGE_COLORS[len(accounts) % len(BADGE_COLORS)],
             }
-
-            # 4. Add the account and save the whole list. Only return success
-            # after the file helper has finished writing it to disk.
-            accounts.append(new_account)
-            self.file.save(accounts)
-            return public_member(new_account)
+            try:
+                create_account(account)
+            except AirtableError as error:
+                raise AccountError(str(error)) from None
+            return public_member(account)
 
     def authenticate(self, email, password):
-        """LOG IN: find the email, check its password, return that member."""
+        # 1. Clean up the email, but do NOT strip or lowercase the password.
         error_message = "Incorrect email or password."
-
-        # 1. Check the input. Invalid emails and incorrect passwords use the
-        # same message. Password spaces are not removed: they can be intentional.
         try:
             email = normalize_email(email)
         except AccountError:
             raise AccountError(error_message) from None
-        if len(password) < 1 or len(password) > 128:
+        if not 1 <= len(password) <= 128:
             raise AccountError(error_message)
-
-        # 2. Read the saved accounts and check them one at a time.
-        # Login only reads this file; it does not change or convert passwords.
-        accounts = self.file.load()
-        for account in accounts:
-            if account["email"] == email:
-                # 3. Compare two ordinary strings. == means "is equal to".
-                # Passwords must match exactly, including capitals and spaces.
+        # 2. Compare ordinary strings against the ONLINE account records.
+        # Nothing is written to disk or changed in Airtable when logging in.
+        for account in self._accounts():
+            if normalize_email(account["email"]) == email:
                 if account["password"] == password:
-                    # 4. Return display information, never the password.
-                    # main.py opens the dashboard and manages logout.
                     return public_member(account)
-
-        # No account matched both the email and password, so login failed.
         raise AccountError(error_message)

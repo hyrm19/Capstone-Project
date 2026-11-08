@@ -1,5 +1,7 @@
 """Start VitalityHub and control which screen the current session may access."""
 
+import asyncio
+
 import flet as ft
 
 from auth import AccountError, AccountStore
@@ -28,12 +30,13 @@ def main(page: ft.Page):
         session_token = None
         show_auth(message="You have been logged out.")
 
-    def show_dashboard(member):
+    async def show_dashboard(member):
         nonlocal session_token, screen_token
         # Load only display-safe profiles, then mint a new identity for THIS
         # login session. Checking just a member ID would let old handlers become
         # active again if the same person logged out and logged back in.
-        members = {profile["id"]: profile for profile in accounts.members()}
+        profiles = await asyncio.to_thread(accounts.members)
+        members = {profile["id"]: profile for profile in profiles}
         token = object()
         session_token = token
         screen_token = token
@@ -61,19 +64,41 @@ def main(page: ft.Page):
             label="Email", value=email_value,
             keyboard_type=ft.KeyboardType.EMAIL, data="auth_email",
         )
-        password = ft.TextField(
-            label="Password (8–128 characters)" if sign_up else "Password",
-            password=True, can_reveal_password=True, data="auth_password",
+        def make_password_field(label, key, visible=True):
+            # Use a custom suffix rather than Flet's built-in reveal button.
+            # Our icon represents the CURRENT STATE: crossed eye = hidden,
+            # open eye = visible. It does not represent the next click's action.
+            field = ft.TextField(
+                label=label, password=True, can_reveal_password=False,
+                visible=visible, data=key,
+            )
+            eye = ft.IconButton(
+                icon=ft.Icons.VISIBILITY_OFF, tooltip="Show password",
+                data=key + "_eye",
+            )
+
+            def toggle_password(e):
+                # Ignore old screen events and changes during a login request.
+                if screen_token is not token or busy:
+                    return
+                field.password = not field.password
+                eye.icon = ft.Icons.VISIBILITY_OFF if field.password else ft.Icons.VISIBILITY
+                eye.tooltip = "Show password" if field.password else "Hide password"
+                page.update()
+
+            eye.on_click = toggle_password
+            field.suffix = eye
+            return field
+
+        password = make_password_field(
+            "Password (8–128 characters)" if sign_up else "Password", "auth_password"
         )
-        confirm = ft.TextField(
-            label="Confirm password", password=True, can_reveal_password=True,
-            visible=sign_up, data="auth_confirm",
-        )
+        confirm = make_password_field("Confirm password", "auth_confirm", visible=sign_up)
         feedback = ft.Text(message, color="#66FCF1", visible=bool(message), data="auth_feedback")
         spinner = ft.ProgressRing(width=24, height=24, visible=False, data="auth_spinner")
 
         def set_busy(value):
-            # Show progress during account file operations and prevent duplicate
+            # Show progress during cloud account requests and prevent duplicate
             # submissions while they run.
             nonlocal busy
             busy = value
@@ -82,7 +107,7 @@ def main(page: ft.Page):
                 control.disabled = value
             page.update()
 
-        def submit(e):
+        async def submit(e):
             if screen_token is not token or busy:
                 return
             feedback.visible = False
@@ -94,17 +119,23 @@ def main(page: ft.Page):
             set_busy(True)
             try:
                 if sign_up:
-                    member = accounts.register(name.value or "", email.value or "", password.value or "")
+                    member = await asyncio.to_thread(
+                        accounts.register, name.value or "", email.value or "", password.value or ""
+                    )
+                    if screen_token is not token:
+                        return
                     # Require a real login after registration instead of keeping
                     # the registration password around or auto-selecting a user.
                     password.value = confirm.value = ""
                     show_auth(message="Account created. Please log in.", email_value=member["email"])
                 else:
-                    member = accounts.authenticate(email.value or "", password.value or "")
+                    member = await asyncio.to_thread(accounts.authenticate, email.value or "", password.value or "")
+                    if screen_token is not token:
+                        return
                     password.value = confirm.value = ""
-                    show_dashboard(member)
+                    await show_dashboard(member)
             except AccountError as error:
-                # This includes validation, damaged files, and failed writes.
+                # This includes validation, table setup, and network failures.
                 # No successful authentication means no access to the dashboard.
                 password.value = confirm.value = ""
                 feedback.value = str(error)
@@ -144,7 +175,8 @@ def main(page: ft.Page):
                         ft.Text("Create a family account" if sign_up else "Welcome back", size=20),
                         ft.Text(
                             "Learning demo only: passwords are saved as readable text "
-                            "on this computer. Use made-up passwords, never real ones.",
+                            "in Airtable. Anyone with the app's token can read them. "
+                            "Use made-up passwords only. Internet is required.",
                             size=12, color="#FBBF24",
                         ),
                         name, email, password, confirm, feedback, spinner,
