@@ -47,6 +47,17 @@ class PortalTests(unittest.TestCase):
         self.assertTrue(self.get("auth_confirm").password)
         self.assertFalse(self.get("auth_confirm").can_reveal_password)
 
+    def test_password_inputs_and_eye_buttons_have_compact_sizes(self):
+        self.assertEqual(self.page.controls[0].width, 400)
+        self.get("switch_auth").on_click(None)
+        for key in ("auth_password", "auth_confirm"):
+            field = self.get(key)
+            self.assertTrue(field.dense)
+            self.assertEqual(field.text_size, 14)
+            self.assertEqual(field.suffix.width, 36)
+            self.assertEqual(field.suffix.height, 36)
+            self.assertEqual(field.suffix.icon_size, 20)
+
     def test_eye_icon_shows_current_password_visibility_in_both_forms(self):
         import flet as ft
         for signup in [False, True]:

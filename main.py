@@ -59,10 +59,14 @@ def main(page: ft.Page):
 
         # Build fresh controls whenever the form changes. Password text is never
         # carried from Signup to Login or from one user's session to another.
-        name = ft.TextField(label="Display name", visible=sign_up, max_length=60, data="auth_name")
+        name = ft.TextField(
+            label="Display name", visible=sign_up, max_length=60,
+            dense=True, text_size=14, data="auth_name",
+        )
         email = ft.TextField(
             label="Email", value=email_value,
             keyboard_type=ft.KeyboardType.EMAIL, data="auth_email",
+            dense=True, text_size=14,
         )
         def make_password_field(label, key, visible=True):
             # Use a custom suffix rather than Flet's built-in reveal button.
@@ -71,10 +75,16 @@ def main(page: ft.Page):
             field = ft.TextField(
                 label=label, password=True, can_reveal_password=False,
                 visible=visible, data=key,
+                # Compact padding keeps the field small without fixing its
+                # height, so validation messages still have room underneath.
+                dense=True, text_size=14,
+                content_padding=ft.Padding.symmetric(horizontal=12, vertical=10),
             )
             eye = ft.IconButton(
                 icon=ft.Icons.VISIBILITY_OFF, tooltip="Show password",
                 data=key + "_eye",
+                # A large default suffix button can stretch the whole input.
+                icon_size=20, width=36, height=36, padding=6,
             )
 
             def toggle_password(e):
@@ -165,9 +175,9 @@ def main(page: ft.Page):
         page.clean()
         page.add(
             ft.Container(
-                width=440,
+                width=400,
                 bgcolor="#1F2833",
-                padding=24,
+                padding=20,
                 border_radius=16,
                 content=ft.Column(
                     controls=[
