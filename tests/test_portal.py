@@ -47,13 +47,19 @@ class PortalTests(unittest.TestCase):
         self.assertTrue(self.get("auth_confirm").password)
         self.assertFalse(self.get("auth_confirm").can_reveal_password)
 
-    def test_password_inputs_and_eye_buttons_have_compact_sizes(self):
-        self.assertEqual(self.page.controls[0].width, 400)
+    def test_password_inputs_match_email_size_without_changing_the_form(self):
+        self.assertEqual(self.page.controls[0].width, 440)
+        self.assertFalse(self.get("auth_email").dense)
+        self.assertIsNone(self.get("auth_email").text_size)
         self.get("switch_auth").on_click(None)
+        email = self.get("auth_email")
         for key in ("auth_password", "auth_confirm"):
             field = self.get(key)
-            self.assertTrue(field.dense)
-            self.assertEqual(field.text_size, 14)
+            self.assertEqual(field.dense, email.dense)
+            self.assertEqual(field.text_size, email.text_size)
+            self.assertEqual(field.content_padding, email.content_padding)
+            self.assertEqual(field.width, email.width)
+            self.assertEqual(field.height, email.height)
             self.assertEqual(field.suffix.width, 36)
             self.assertEqual(field.suffix.height, 36)
             self.assertEqual(field.suffix.icon_size, 20)
